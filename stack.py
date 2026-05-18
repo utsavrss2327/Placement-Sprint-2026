@@ -1,24 +1,22 @@
-def isValid(s: str) -> bool:
-    stack = []
-    # Map closing brackets to their corresponding opening brackets
-    close_to_open = {")": "(", "}": "{", "]": "["}
-    
-    for char in s:
-        # If it's a closing bracket
-        if char in close_to_open:
-            # Check if stack is not empty and top matches the opening bracket
-            if stack and stack[-1] == close_to_open[char]:
-                stack.pop() # Match found, remove it
-            else:
-                return False # Mismatch or closing without an opening
-        else:
-            # It's an opening bracket, push to stack
-            stack.append(char)
-            
-    # If stack is empty, all brackets matched perfectly
-    return len(stack) == 0
+from typing import List
 
-# --- Test Cases ---
-print(isValid("()[]{}")) # Expected: True
-print(isValid("([)]"))   # Expected: False
-print(isValid("{[]}"))   # Expected: True
+class Solution:
+    def dailyTemperatures(self, temperatures: List[int]) -> List[int]:
+        res = [0] * len(temperatures)
+        stack = [] # will store pairs of: [temperature, index]
+        
+        for curr_idx, curr_temp in enumerate(temperatures):
+            # While stack is not empty AND current temp is warmer than the top of stack
+            while stack and curr_temp < stack[-1][0]:
+                stack_temp, stack_idx = stack.pop()
+                res[stack_idx] = curr_idx - stack_idx
+                
+            # Push current day's [temp, index] onto the stack
+            stack.append([curr_temp, curr_idx])
+            
+        return res
+    
+# --- Test Execution ---
+sol = Solution()
+test_temps = [80, 70, 60, 50]
+print(sol.dailyTemperatures(test_temps))    
