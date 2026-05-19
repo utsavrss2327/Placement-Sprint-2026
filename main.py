@@ -1,5 +1,6 @@
+import time
 import fakeredis
-from fastapi import FastAPI, Request, Depends, HTTPException, status
+from fastapi import FastAPI, Request, Depends, HTTPException, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -18,9 +19,15 @@ def get_db():
     finally:
         db.close()
 
-# --- 1. Endpoint: Generate Key ---
+# --- NEW: The Heavy Background Task ---
+def send_welcome_email(username: str):
+    print(f"\n[BACKGROUND TASK STARTED] Preparing to send welcome email to {username}...")
+    time.sleep(5) # Simulating a slow 5-second process (like connecting to an email server)
+    print(f"[BACKGROUND TASK COMPLETE] Welcome email successfully sent to {username}!\n")
+
+# --- 1. Endpoint: Generate Key (Upgraded with BackgroundTasks) ---
 @app.post("/generate-key/")
-def create_api_key(username: str, db: Session = Depends(get_db)):
+def create_api_key(username: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     existing_user = db.query(APIUser).filter(APIUser.username == username).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already exists!")
@@ -30,22 +37,25 @@ def create_api_key(username: str, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     
-    return {"message": "Key generated!", "username": username, "api_key": new_key}
+    # Command FastAPI to run this function AFTER sending the instant response to the user
+    background_tasks.add_task(send_welcome_email, username)
+    
+    return {
+        "message": "Key generated! Look at your Mac terminal in exactly 5 seconds.", 
+        "username": username, 
+        "api_key": new_key
+    }
 
-# --- 2. The Upgraded Global Middleware ---
+# --- 2. The Global Middleware (Unchanged) ---
 @app.middleware("http")
 async def secure_rate_limiter(request: Request, call_next):
-    # Bypass the security check for our documentation and key generation routes
     if request.url.path in ["/docs", "/openapi.json", "/generate-key/"]:
         return await call_next(request)
         
-    # Extract the API key from the request headers
     api_key = request.headers.get("X-API-Key")
-    
     if not api_key:
         return JSONResponse(status_code=401, content={"detail": "Missing API Key header."})
         
-    # Open a quick database session to verify the key
     db = SessionLocal()
     user = db.query(APIUser).filter(APIUser.api_key == api_key).first()
     db.close()
@@ -53,10 +63,9 @@ async def secure_rate_limiter(request: Request, call_next):
     if not user:
         return JSONResponse(status_code=401, content={"detail": "Invalid API Key."})
         
-    # Rate limit based on their unique USERNAME, not their IP!
     redis_key = f"rate_limit:{user.username}"
-    
     current_requests = r.get(redis_key)
+    
     if current_requests is not None:
         if int(current_requests) >= LIMIT:
             return JSONResponse(
@@ -69,7 +78,7 @@ async def secure_rate_limiter(request: Request, call_next):
             
     return await call_next(request)
 
-# --- 3. Protected Resource Endpoint ---
+# --- 3. Protected Resource Endpoint (Unchanged) ---
 @app.get("/data/")
 def get_secret_data():
     return {"message": "If you are reading this, your API key is valid and you are not rate-limited!"}
