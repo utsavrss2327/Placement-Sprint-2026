@@ -3,8 +3,9 @@ import fakeredis
 from fastapi import FastAPI, Request, Depends, HTTPException, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from pydantic import BaseModel # <-- NEW IMPORT
 
-from database import SessionLocal, APIUser, generate_api_key
+from database import SessionLocal, APIUser, SecureNote, generate_api_key # <-- Added SecureNote
 
 app = FastAPI()
 r = fakeredis.FakeRedis(decode_responses=True)
@@ -19,13 +20,15 @@ def get_db():
     finally:
         db.close()
 
-# --- NEW: The Heavy Background Task ---
+# --- Pydantic Schema for receiving data ---
+class NoteCreate(BaseModel):
+    content: str
+
 def send_welcome_email(username: str):
     print(f"\n[BACKGROUND TASK STARTED] Preparing to send welcome email to {username}...")
-    time.sleep(5) # Simulating a slow 5-second process (like connecting to an email server)
+    time.sleep(5) 
     print(f"[BACKGROUND TASK COMPLETE] Welcome email successfully sent to {username}!\n")
 
-# --- 1. Endpoint: Generate Key (Upgraded with BackgroundTasks) ---
 @app.post("/generate-key/")
 def create_api_key(username: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     existing_user = db.query(APIUser).filter(APIUser.username == username).first()
@@ -37,16 +40,10 @@ def create_api_key(username: str, background_tasks: BackgroundTasks, db: Session
     db.add(new_user)
     db.commit()
     
-    # Command FastAPI to run this function AFTER sending the instant response to the user
     background_tasks.add_task(send_welcome_email, username)
-    
-    return {
-        "message": "Key generated! Look at your Mac terminal in exactly 5 seconds.", 
-        "username": username, 
-        "api_key": new_key
-    }
+    return {"message": "Key generated!", "username": username, "api_key": new_key}
 
-# --- 2. The Global Middleware (Unchanged) ---
+# --- The Middleware (Upgraded with request.state) ---
 @app.middleware("http")
 async def secure_rate_limiter(request: Request, call_next):
     if request.url.path in ["/docs", "/openapi.json", "/generate-key/"]:
@@ -63,6 +60,9 @@ async def secure_rate_limiter(request: Request, call_next):
     if not user:
         return JSONResponse(status_code=401, content={"detail": "Invalid API Key."})
         
+    # --- NEW: Stick a post-it note on the request with the username! ---
+    request.state.username = user.username
+        
     redis_key = f"rate_limit:{user.username}"
     current_requests = r.get(redis_key)
     
@@ -78,7 +78,38 @@ async def secure_rate_limiter(request: Request, call_next):
             
     return await call_next(request)
 
-# --- 3. Protected Resource Endpoint (Unchanged) ---
-@app.get("/data/")
-def get_secret_data():
-    return {"message": "If you are reading this, your API key is valid and you are not rate-limited!"}
+# --- NEW: The Core Business Logic Endpoint ---
+@app.post("/notes/")
+def create_secure_note(note: NoteCreate, request: Request, db: Session = Depends(get_db)):
+    # 1. Read the post-it note left by the middleware
+    owner_username = request.state.username
+    
+    # 2. Save the note to the database under their name
+    new_note = SecureNote(username=owner_username, content=note.content)
+    db.add(new_note)
+    db.commit()
+    
+    # 3. Return a success response
+    return {
+        "message": "Vault note securely saved!", 
+        "owner": owner_username, 
+        "saved_content": note.content
+    }
+
+# --- NEW: Endpoint to Retrieve Your Notes ---
+@app.get("/notes/")
+def get_my_notes(request: Request, db: Session = Depends(get_db)):
+    # 1. Who is asking? Read the post-it note from the middleware
+    owner_username = request.state.username
+    
+    # 2. Query the database for ONLY the notes belonging to this user
+    user_notes = db.query(SecureNote).filter(SecureNote.username == owner_username).all()
+    
+    # 3. Format the notes into a clean list and return them
+    formatted_notes = [{"id": note.id, "content": note.content} for note in user_notes]
+    
+    return {
+        "owner": owner_username,
+        "total_notes": len(formatted_notes),
+        "notes": formatted_notes
+    }
